@@ -28,7 +28,8 @@ import java.io.IOException
 data class Trigger(
     val name: String,
     val severity: String,
-    val condition: Script,
+    val condition: TriggerCondition,
+    val script: Script?,
     val actions: List<Action>,
     val id: String = UUIDs.base64UUID()
 ) : ToXContent {
@@ -38,9 +39,7 @@ data class Trigger(
                 .field(ID_FIELD, id)
                 .field(NAME_FIELD, name)
                 .field(SEVERITY_FIELD, severity)
-                .startObject(CONDITION_FIELD)
-                .field(SCRIPT_FIELD, condition)
-                .endObject()
+                .field(CONDITION_FIELD, condition)
                 .field(ACTIONS_FIELD, actions.toTypedArray())
                 .endObject()
         return builder
@@ -58,32 +57,32 @@ data class Trigger(
         const val SEVERITY_FIELD = "severity"
         const val CONDITION_FIELD = "condition"
         const val ACTIONS_FIELD = "actions"
-        const val SCRIPT_FIELD = "script"
 
         @JvmStatic @Throws(IOException::class)
         fun parse(xcp: XContentParser): Trigger {
             var id = UUIDs.base64UUID() // assign a default triggerId if one is not specified
             lateinit var name: String
             lateinit var severity: String
-            lateinit var condition: Script
+            var compiledScript: Script? = null
+            lateinit var condition: TriggerCondition
             val actions: MutableList<Action> = mutableListOf()
             ensureExpectedToken(Token.START_OBJECT, xcp.currentToken(), xcp::getTokenLocation)
 
             while (xcp.nextToken() != Token.END_OBJECT) {
                 val fieldName = xcp.currentName()
-
                 xcp.nextToken()
                 when (fieldName) {
                     ID_FIELD -> id = xcp.text()
                     NAME_FIELD -> name = xcp.text()
                     SEVERITY_FIELD -> severity = xcp.text()
                     CONDITION_FIELD -> {
-                        xcp.nextToken()
-                        condition = Script.parse(xcp)
-                        require(condition.lang == Script.DEFAULT_SCRIPT_LANG) {
-                            "Invalid script language. Allowed languages are [${Script.DEFAULT_SCRIPT_LANG}]"
+                        condition = TriggerCondition.parse(xcp)
+                        if (condition.script != null) {
+                            compiledScript = condition.script!!
+                            require(compiledScript.lang == Script.DEFAULT_SCRIPT_LANG) {
+                                "Invalid script language. Allowed languages are [${Script.DEFAULT_SCRIPT_LANG}]"
+                            }
                         }
-                        xcp.nextToken()
                     }
                     ACTIONS_FIELD -> {
                         ensureExpectedToken(Token.START_ARRAY, xcp.currentToken(), xcp::getTokenLocation)
@@ -98,6 +97,7 @@ data class Trigger(
                     name = requireNotNull(name) { "Trigger name is null" },
                     severity = requireNotNull(severity) { "Trigger severity is null" },
                     condition = requireNotNull(condition) { "Trigger is null" },
+                    script = compiledScript,
                     actions = requireNotNull(actions) { "Trigger actions are null" },
                     id = requireNotNull(id) { "Trigger id is null." })
         }

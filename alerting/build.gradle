@@ -53,8 +53,11 @@ configurations.all {
 }
 
 dependencies {
+    compile files("$rootProject.projectDir/../sql/action/build/libs/action-0.8.0.0.jar")
     compileOnly "org.elasticsearch.plugin:elasticsearch-scripting-painless-spi:${versions.elasticsearch}"
 
+    compile "org.json:json:20180813"
+    compile "org.elasticsearch.client:elasticsearch-rest-client:${versions.elasticsearch}"
     // Elasticsearch Nanny state
     compile "org.jetbrains.kotlin:kotlin-stdlib:${kotlin_version}"
     compile "org.jetbrains.kotlin:kotlin-stdlib-common:${kotlin_version}"

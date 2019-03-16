@@ -23,6 +23,7 @@ import com.amazon.opendistroforelasticsearch.alerting.randomTrigger
 import com.amazon.opendistroforelasticsearch.alerting.toJsonString
 import com.amazon.opendistroforelasticsearch.alerting.core.model.SearchInput
 import com.amazon.opendistroforelasticsearch.alerting.elasticapi.string
+import com.amazon.opendistroforelasticsearch.alerting.randomSQLColumnTrigger
 import org.elasticsearch.common.settings.Settings
 import org.elasticsearch.common.xcontent.LoggingDeprecationHandler
 import org.elasticsearch.common.xcontent.NamedXContentRegistry
@@ -65,6 +66,15 @@ class XContentTests : ESTestCase() {
         val parsedTrigger = Trigger.parse(parser(triggerString))
 
         assertEquals("Round tripping Trigger doesn't work", trigger, parsedTrigger)
+    }
+
+    fun `test trigger SQL parsing`() {
+        val trigger = randomSQLColumnTrigger()
+
+        val triggerString = trigger.toXContent(builder(), ToXContent.EMPTY_PARAMS).string()
+        val parsedTrigger = Trigger.parse(parser(triggerString))
+
+        assertEquals("Round tripping SQL Trigger doesn't work", trigger, parsedTrigger)
     }
 
     fun `test alert parsing`() {

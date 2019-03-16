@@ -29,6 +29,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class ScheduleTest : XContentTestBase {
+
     @Test
     fun `test time zone conversion`() {
         val cronExpression = "31 * * * *" // Run at minute 31.

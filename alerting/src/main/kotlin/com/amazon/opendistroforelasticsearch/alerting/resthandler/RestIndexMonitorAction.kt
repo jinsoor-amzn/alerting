@@ -26,7 +26,10 @@ import com.amazon.opendistroforelasticsearch.alerting.util.REFRESH
 import com.amazon.opendistroforelasticsearch.alerting.util._ID
 import com.amazon.opendistroforelasticsearch.alerting.util._VERSION
 import com.amazon.opendistroforelasticsearch.alerting.AlertingPlugin
+import com.amazon.opendistroforelasticsearch.alerting.core.model.SearchSqlInput
+import com.amazon.opendistroforelasticsearch.alerting.util.CheckInstalledPlugins
 import org.elasticsearch.action.ActionListener
+import org.elasticsearch.action.admin.cluster.node.info.NodesInfoResponse
 import org.elasticsearch.action.admin.indices.create.CreateIndexResponse
 import org.elasticsearch.action.get.GetRequest
 import org.elasticsearch.action.get.GetResponse
@@ -37,6 +40,7 @@ import org.elasticsearch.action.search.SearchResponse
 import org.elasticsearch.action.support.WriteRequest
 import org.elasticsearch.client.node.NodeClient
 import org.elasticsearch.cluster.service.ClusterService
+import org.elasticsearch.common.Table
 import org.elasticsearch.common.settings.Settings
 import org.elasticsearch.common.xcontent.LoggingDeprecationHandler
 import org.elasticsearch.common.xcontent.ToXContent.EMPTY_PARAMS
@@ -68,7 +72,7 @@ class RestIndexMonitorAction(
     settings: Settings,
     controller: RestController,
     jobIndices: ScheduledJobIndices,
-    clusterService: ClusterService
+    val clusterService: ClusterService
 ) : BaseRestHandler(settings) {
 
     private var scheduledJobIndices: ScheduledJobIndices
@@ -122,12 +126,48 @@ class RestIndexMonitorAction(
     ) : AsyncActionHandler(client, channel) {
 
         fun start() {
+            for (input in newMonitor.inputs) {
+                if (input is SearchSqlInput && !CheckInstalledPlugins.isSQLInstalled) {
+                    throw IllegalArgumentException("Monitor includes SQL Query but OpenDistroSQL is not installed. " +
+                        "Please install OpenDistroSQL before creating Monitor with SQL Query")
+                }
+            }
             if (!scheduledJobIndices.scheduledJobIndexExists()) {
                 scheduledJobIndices.initScheduledJobIndex(ActionListener.wrap(::onCreateMappingsResponse, ::onFailure))
             } else {
                 prepareMonitorIndexing()
             }
         }
+
+        private fun getTableWithHeader(): Table {
+        val table = Table()
+        table.startHeaders()
+        table.addCell("id", "default:false;desc:unique node id")
+        table.addCell("name", "alias:n;desc:node name")
+        table.addCell("component", "alias:c;desc:component")
+        table.addCell("version", "alias:v;desc:component version")
+        table.addCell("description", "alias:d;default:false;desc:plugin details")
+        table.endHeaders()
+        return table
+    }
+
+    private fun buildTable(nodesInfo: NodesInfoResponse): Table {
+        val table = getTableWithHeader()
+
+        val info = nodesInfo.nodesMap[clusterService.localNode().id]
+
+        for (pluginInfo in info!!.plugins.pluginInfos) {
+            table.startRow()
+            table.addCell(clusterService.localNode().id)
+            table.addCell(clusterService.localNode().name)
+            table.addCell(pluginInfo.name)
+            table.addCell(pluginInfo.version)
+            table.addCell(pluginInfo.description)
+            table.endRow()
+        }
+
+        return table
+    }
 
         /**
          * This function prepares for indexing a new monitor.
@@ -138,8 +178,8 @@ class RestIndexMonitorAction(
             if (channel.request().method() == PUT) return updateMonitor()
             val query = QueryBuilders.boolQuery().filter(QueryBuilders.termQuery("${Monitor.MONITOR_TYPE}.type", Monitor.MONITOR_TYPE))
             val searchSource = SearchSourceBuilder().query(query).timeout(requestTimeout)
-            val searchRequest = SearchRequest(ScheduledJob.SCHEDULED_JOBS_INDEX)
-                    .types(ScheduledJob.SCHEDULED_JOB_TYPE)
+            val searchRequest = SearchRequest(SCHEDULED_JOBS_INDEX)
+                    .types(SCHEDULED_JOB_TYPE)
                     .source(searchSource)
             client.search(searchRequest, ActionListener.wrap(::onSearchResponse, ::onFailure))
         }
@@ -158,10 +198,10 @@ class RestIndexMonitorAction(
 
         private fun onCreateMappingsResponse(response: CreateIndexResponse) {
             if (response.isAcknowledged) {
-                logger.info("Created ${ScheduledJob.SCHEDULED_JOBS_INDEX} with mappings.")
+                logger.info("Created $SCHEDULED_JOBS_INDEX with mappings.")
                 prepareMonitorIndexing()
             } else {
-                logger.error("Create ${ScheduledJob.SCHEDULED_JOBS_INDEX} mappings call not acknowledged.")
+                logger.error("Create $SCHEDULED_JOBS_INDEX mappings call not acknowledged.")
                 channel.sendResponse(BytesRestResponse(RestStatus.INTERNAL_SERVER_ERROR,
                         response.toXContent(channel.newErrorBuilder(), EMPTY_PARAMS)))
             }

@@ -32,9 +32,12 @@ import com.amazon.opendistroforelasticsearch.alerting.script.TriggerScript
 import com.amazon.opendistroforelasticsearch.alerting.settings.AlertingSettings
 import com.amazon.opendistroforelasticsearch.alerting.core.model.ScheduledJob
 import com.amazon.opendistroforelasticsearch.alerting.core.model.SearchInput
+import com.amazon.opendistroforelasticsearch.alerting.core.model.SearchSqlInput
 import com.amazon.opendistroforelasticsearch.alerting.core.resthandler.RestScheduledJobStatsHandler
 import com.amazon.opendistroforelasticsearch.alerting.core.schedule.JobScheduler
 import com.amazon.opendistroforelasticsearch.alerting.core.settings.ScheduledJobSettings
+import org.apache.logging.log4j.LogManager
+import com.amazon.opendistroforelasticsearch.alerting.util.CheckInstalledPlugins
 import org.elasticsearch.action.ActionRequest
 import org.elasticsearch.action.ActionResponse
 import org.elasticsearch.client.Client
@@ -72,6 +75,8 @@ import java.util.function.Supplier
  * [NamedXContentRegistry] so that we are able to deserialize the custom named objects.
  */
 internal class AlertingPlugin : PainlessExtension, ActionPlugin, ScriptPlugin, Plugin() {
+    private val logger = LogManager.getLogger(AlertingPlugin::class.java)
+
     override fun getContextWhitelists(): Map<ScriptContext<*>, List<Whitelist>> {
         val whitelist = WhitelistLoader.loadFromResourceFiles(javaClass, "com.amazon.opendistroforelasticsearch.alerting.txt")
         return mapOf(TriggerScript.CONTEXT to listOf(whitelist))
@@ -118,7 +123,7 @@ internal class AlertingPlugin : PainlessExtension, ActionPlugin, ScriptPlugin, P
     }
 
     override fun getNamedXContent(): List<NamedXContentRegistry.Entry> {
-        return listOf(Monitor.XCONTENT_REGISTRY, SearchInput.XCONTENT_REGISTRY)
+        return listOf(Monitor.XCONTENT_REGISTRY, SearchInput.XCONTENT_REGISTRY, SearchSqlInput.XCONTENT_REGISTRY)
     }
 
     override fun createComponents(
@@ -139,6 +144,7 @@ internal class AlertingPlugin : PainlessExtension, ActionPlugin, ScriptPlugin, P
         scheduledJobIndices = ScheduledJobIndices(client.admin(), clusterService)
         scheduler = JobScheduler(threadPool, runner)
         sweeper = JobSweeper(environment.settings(), client, clusterService, threadPool, xContentRegistry, scheduler, ALERTING_JOB_TYPES)
+        CheckInstalledPlugins(client, clusterService, threadPool)
         this.threadPool = threadPool
         this.clusterService = clusterService
         return listOf(sweeper, scheduler, runner, scheduledJobIndices)

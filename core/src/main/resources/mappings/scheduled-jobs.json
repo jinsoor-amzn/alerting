@@ -70,6 +70,16 @@
                     "enabled": false
                   }
                 }
+              },
+              "search_sql": {
+                "properties": {
+                  "output_format": {
+                    "type": "text"
+                  },
+                  "sql_query": {
+                    "type": "text"
+                  }
+                }
               }
             }
           },

@@ -23,6 +23,10 @@ import com.amazon.opendistroforelasticsearch.alerting.core.model.IntervalSchedul
 import com.amazon.opendistroforelasticsearch.alerting.core.model.Schedule
 import com.amazon.opendistroforelasticsearch.alerting.core.model.SearchInput
 import com.amazon.opendistroforelasticsearch.alerting.elasticapi.string
+import com.amazon.opendistroforelasticsearch.alerting.model.TriggerCondition
+import com.amazon.opendistroforelasticsearch.alerting.model.TriggerConditionSQL
+import com.amazon.opendistroforelasticsearch.alerting.model.TriggerSQLAggregations
+import com.amazon.opendistroforelasticsearch.alerting.model.trigger.SingleValueScript
 import org.apache.http.Header
 import org.apache.http.HttpEntity
 import org.elasticsearch.client.Response
@@ -66,8 +70,37 @@ fun randomTrigger(
         id = id,
         name = name,
         severity = severity,
-        condition = condition,
+        condition = TriggerCondition(script = condition, aggregation = null),
+        script = condition,
         actions = if (actions.isEmpty()) (0..randomInt(10)).map { randomAction(destinationId = destinationId) } else actions)
+}
+
+fun randomSQLColumnTrigger(
+    id: String = UUIDs.base64UUID(),
+    name: String = ESRestTestCase.randomAlphaOfLength(10),
+    severity: String = "1",
+    actions: List<Action> = mutableListOf(),
+    destinationId: String = ""
+): Trigger {
+    val conditionSQL = randomTriggerSQLAggregation()
+    return Trigger(
+        id = id,
+        name = name,
+        severity = severity,
+        condition = TriggerCondition(script = null, aggregation = conditionSQL),
+        script = null,
+        actions = if (actions.isEmpty()) (0..randomInt(10)).map { randomAction(destinationId = destinationId) } else actions)
+}
+
+fun randomTriggerSQLAggregation(): TriggerSQLAggregations {
+    return TriggerSQLAggregations(TriggerSQLAggregations.MATCH.ANY, listOf(randomTriggerConditionSQL()))
+}
+
+fun randomTriggerConditionSQL(): TriggerConditionSQL {
+    val column = "AVG(latency)"
+    val description = TriggerConditionSQL.DESCRIPTION.IS_BELOW
+    val value = "2000"
+    return TriggerConditionSQL(column, description, value, Script(SingleValueScript(column, description, value).scriptTemplate))
 }
 
 fun randomScript(source: String = "return " + ESRestTestCase.randomBoolean().toString()): Script = Script(source)

@@ -46,7 +46,7 @@ data class SearchInput(val indices: List<String>, val query: SearchSourceBuilder
         const val QUERY_FIELD = "query"
         const val SEARCH_FIELD = "search"
 
-        val XCONTENT_REGISTRY = NamedXContentRegistry.Entry(Input::class.java, ParseField("search"), CheckedFunction { parseInner(it) })
+        val XCONTENT_REGISTRY = NamedXContentRegistry.Entry(Input::class.java, ParseField(SEARCH_FIELD), CheckedFunction { parseInner(it) })
 
         @JvmStatic @Throws(IOException::class)
         private fun parseInner(xcp: XContentParser): SearchInput {
@@ -70,8 +70,7 @@ data class SearchInput(val indices: List<String>, val query: SearchSourceBuilder
                 }
             }
 
-            return SearchInput(indices,
-                    requireNotNull(searchSourceBuilder) { "SearchInput query is null" })
+            return SearchInput(indices, requireNotNull(searchSourceBuilder) { "SearchInput $QUERY_FIELD is null" })
         }
     }
 }

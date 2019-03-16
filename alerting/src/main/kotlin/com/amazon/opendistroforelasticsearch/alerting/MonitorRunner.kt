@@ -52,6 +52,11 @@ import com.amazon.opendistroforelasticsearch.alerting.elasticapi.convertToMap
 import com.amazon.opendistroforelasticsearch.alerting.elasticapi.firstFailureOrNull
 import com.amazon.opendistroforelasticsearch.alerting.elasticapi.retry
 import org.apache.logging.log4j.LogManager
+import com.amazon.opendistroforelasticsearch.alerting.core.model.SearchSqlInput
+import com.amazon.opendistroforelasticsearch.alerting.model.TriggerSQLAggregations
+import com.amazon.opendistroforelasticsearch.sql.action.SQLAction
+import com.amazon.opendistroforelasticsearch.sql.action.SQLQueryRequest
+import com.amazon.opendistroforelasticsearch.sql.action.SQLQueryResponse
 import org.elasticsearch.ExceptionsHelper
 import org.elasticsearch.action.DocWriteRequest
 import org.elasticsearch.action.bulk.BackoffPolicy
@@ -64,6 +69,7 @@ import org.elasticsearch.action.search.SearchRequest
 import org.elasticsearch.client.Client
 import org.elasticsearch.common.Strings
 import org.elasticsearch.cluster.service.ClusterService
+import org.elasticsearch.common.bytes.BytesArray
 import org.elasticsearch.common.bytes.BytesReference
 import org.elasticsearch.common.settings.Settings
 import org.elasticsearch.common.unit.TimeValue
@@ -100,14 +106,22 @@ class MonitorRunner(
 
     private val logger = LogManager.getLogger(MonitorRunner::class.java)
 
-    @Volatile private var searchTimeout = INPUT_TIMEOUT.get(settings)
-    @Volatile private var bulkTimeout = BULK_TIMEOUT.get(settings)
-    @Volatile private var alertBackoffMillis = ALERT_BACKOFF_MILLIS.get(settings)
-    @Volatile private var alertBackoffCount = ALERT_BACKOFF_COUNT.get(settings)
-    @Volatile private var moveAlertsBackoffMillis = MOVE_ALERTS_BACKOFF_MILLIS.get(settings)
-    @Volatile private var moveAlertsBackoffCount = MOVE_ALERTS_BACKOFF_COUNT.get(settings)
-    @Volatile private var retryPolicy = BackoffPolicy.constantBackoff(alertBackoffMillis, alertBackoffCount)
-    @Volatile private var moveAlertsRetryPolicy = BackoffPolicy.exponentialBackoff(moveAlertsBackoffMillis, moveAlertsBackoffCount)
+    @Volatile
+    private var searchTimeout = INPUT_TIMEOUT.get(settings)
+    @Volatile
+    private var bulkTimeout = BULK_TIMEOUT.get(settings)
+    @Volatile
+    private var alertBackoffMillis = ALERT_BACKOFF_MILLIS.get(settings)
+    @Volatile
+    private var alertBackoffCount = ALERT_BACKOFF_COUNT.get(settings)
+    @Volatile
+    private var moveAlertsBackoffMillis = MOVE_ALERTS_BACKOFF_MILLIS.get(settings)
+    @Volatile
+    private var moveAlertsBackoffCount = MOVE_ALERTS_BACKOFF_COUNT.get(settings)
+    @Volatile
+    private var retryPolicy = BackoffPolicy.constantBackoff(alertBackoffMillis, alertBackoffCount)
+    @Volatile
+    private var moveAlertsRetryPolicy = BackoffPolicy.exponentialBackoff(moveAlertsBackoffMillis, moveAlertsBackoffCount)
 
     init {
         clusterService.clusterSettings.addSettingsUpdateConsumer(INPUT_TIMEOUT) { searchTimeout = it }
@@ -197,7 +211,8 @@ class MonitorRunner(
                 }
             }
 
-            val updatedAlert = composeAlert(triggerCtx, triggerResult, monitorResult.alertError() ?: triggerResult.alertError())
+            val updatedAlert = composeAlert(triggerCtx, triggerResult, monitorResult.alertError()
+                ?: triggerResult.alertError())
             if (updatedAlert != null) updatedAlerts += updatedAlert
         }
 
@@ -223,18 +238,18 @@ class MonitorRunner(
         val updatedHistory = currentAlert?.errorHistory.update(alertError)
         return if (alertError == null && !result.triggered) {
             currentAlert?.copy(state = COMPLETED, endTime = currentTime, errorMessage = null,
-                    errorHistory = updatedHistory)
+                errorHistory = updatedHistory)
         } else if (alertError == null && currentAlert?.isAcknowledged() == true) {
             null
         } else if (currentAlert != null) {
             val alertState = if (alertError == null) ACTIVE else ERROR
             currentAlert.copy(state = alertState, lastNotificationTime = currentTime, errorMessage = alertError?.message,
-                    errorHistory = updatedHistory)
+                errorHistory = updatedHistory)
         } else {
             val alertState = if (alertError == null) ACTIVE else ERROR
             Alert(monitor = ctx.monitor, trigger = ctx.trigger, startTime = currentTime,
-                    lastNotificationTime = currentTime, state = alertState, errorMessage = alertError?.message,
-                    errorHistory = updatedHistory)
+                lastNotificationTime = currentTime, state = alertState, errorMessage = alertError?.message,
+                errorHistory = updatedHistory)
         }
     }
 
@@ -246,17 +261,26 @@ class MonitorRunner(
                     is SearchInput -> {
                         // TODO: Figure out a way to use SearchTemplateRequest without bringing in the entire TransportClient
                         val searchParams = mapOf("period_start" to periodStart.toEpochMilli(),
-                                "period_end" to periodEnd.toEpochMilli())
+                            "period_end" to periodEnd.toEpochMilli())
                         val searchSource = scriptService.compile(Script(ScriptType.INLINE, Script.DEFAULT_TEMPLATE_LANG,
-                                input.query.toString(), searchParams), TemplateScript.CONTEXT)
-                                .newInstance(searchParams)
-                                .execute()
+                            input.query.toString(), searchParams), TemplateScript.CONTEXT)
+                            .newInstance(searchParams)
+                            .execute()
 
                         val searchRequest = SearchRequest().indices(*input.indices.toTypedArray())
                         XContentType.JSON.xContent().createParser(xContentRegistry, LoggingDeprecationHandler.INSTANCE, searchSource).use {
                             searchRequest.source(SearchSourceBuilder.fromXContent(it))
                         }
                         results += client.search(searchRequest).actionGet(searchTimeout).convertToMap()
+                    }
+                    is SearchSqlInput -> {
+                        val searchParams = mapOf("period_start" to periodStart.toEpochMilli(),
+                            "period_end" to periodEnd.toEpochMilli())
+                        val searchSource = scriptService.compile(Script(ScriptType.INLINE, Script.DEFAULT_TEMPLATE_LANG,
+                            input.sqlQuery, searchParams), TemplateScript.CONTEXT)
+                            .newInstance(searchParams)
+                            .execute()
+                        results += executeSearchSqlInput(input.copy(sqlQuery = searchSource.toString()))
                     }
                     else -> {
                         throw IllegalArgumentException("Unsupported input type: ${input.name()}.")
@@ -270,11 +294,47 @@ class MonitorRunner(
         }
     }
 
+    private fun executeSearchSqlInput(input: SearchSqlInput): Map<String, Any> {
+        val format = if (input.outputFormat == "json") {
+            ""
+        } else {
+            input.outputFormat
+        }
+        val actionResponse = client.execute(SQLAction.INSTANCE, SQLQueryRequest(format, input.sqlQuery)).actionGet()
+        val response = SQLQueryResponse.fromActionResponse(actionResponse)
+        logger.info("executeSQLDependency Is it working? response from transport ${response.result}")
+        return XContentHelper.convertToMap(BytesArray(response.result), false, XContentType.JSON).v2()
+    }
+
     private fun runTrigger(monitor: Monitor, trigger: Trigger, ctx: TriggerExecutionContext): TriggerRunResult {
         return try {
-            val triggered = scriptService.compile(trigger.condition, TriggerScript.CONTEXT)
-                    .newInstance(trigger.condition.params)
+            val triggered = if (trigger.script != null) {
+                scriptService.compile(trigger.script, TriggerScript.CONTEXT)
+                    .newInstance(trigger.script.params)
                     .execute(ctx)
+            } else {
+                val resultArray = trigger.condition.aggregation!!.triggerConditionSQLs.map { sqlCondition ->
+                    scriptService.compile(sqlCondition.script, TriggerScript.CONTEXT)
+                        .newInstance(sqlCondition.script.params)
+                        .execute(ctx)
+                }.toBooleanArray()
+
+                when (trigger.condition.aggregation.match) {
+                    TriggerSQLAggregations.MATCH.ALL -> {
+                        // All conditions in aggregation needs to be true.
+                        // If any one of the condition is false this trigger should return false.
+                        val triggerResult = resultArray.filter { item -> item }
+                        triggerResult.size == resultArray.size
+                    }
+                    TriggerSQLAggregations.MATCH.ANY -> {
+                        // At least on of conditions in aggregation needs to be true.
+                        // If any one of the condition is true this trigger should return true.
+                        val triggerResult = resultArray.filter { item -> item }
+                        triggerResult.isNotEmpty()
+                    }
+                }
+            }
+
             TriggerRunResult(trigger.name, triggered, null)
         } catch (e: Exception) {
             logger.info("Error running script for monitor ${monitor.id}, trigger: ${trigger.id}", e)
@@ -285,15 +345,15 @@ class MonitorRunner(
 
     private fun loadCurrentAlerts(monitor: Monitor): Map<Trigger, Alert?> {
         val request = SearchRequest(AlertIndices.ALERT_INDEX)
-                .routing(monitor.id)
-                .source(alertQuery(monitor))
+            .routing(monitor.id)
+            .source(alertQuery(monitor))
         val response = client.search(request).actionGet(searchTimeout)
         if (response.status() != RestStatus.OK) {
             throw (response.firstFailureOrNull()?.cause ?: RuntimeException("Unknown error loading alerts"))
         }
 
         val foundAlerts = response.hits.map { Alert.parse(contentParser(it.sourceRef), it.id, it.version) }
-                .groupBy { it.triggerId }
+            .groupBy { it.triggerId }
         foundAlerts.values.forEach { alerts ->
             if (alerts.size > 1) {
                 logger.warn("Found multiple alerts for same trigger: $alerts")
@@ -314,8 +374,8 @@ class MonitorRunner(
 
     private fun alertQuery(monitor: Monitor): SearchSourceBuilder {
         return SearchSourceBuilder.searchSource()
-                .size(monitor.triggers.size * 2) // We expect there to be only a single in-progress alert so fetch 2 to check
-                .query(QueryBuilders.termQuery(Alert.MONITOR_ID_FIELD, monitor.id))
+            .size(monitor.triggers.size * 2) // We expect there to be only a single in-progress alert so fetch 2 to check
+            .query(QueryBuilders.termQuery(Alert.MONITOR_ID_FIELD, monitor.id))
     }
 
     private fun saveAlerts(alerts: List<Alert>) {
@@ -327,21 +387,21 @@ class MonitorRunner(
             when (alert.state) {
                 ACTIVE, ERROR -> {
                     listOf<DocWriteRequest<*>>(IndexRequest(AlertIndices.ALERT_INDEX, AlertIndices.MAPPING_TYPE)
-                            .routing(alert.monitorId)
-                            .source(alert.toXContent(XContentFactory.jsonBuilder(), ToXContent.EMPTY_PARAMS))
-                            .id(if (alert.id != Alert.NO_ID) alert.id else null))
+                        .routing(alert.monitorId)
+                        .source(alert.toXContent(XContentFactory.jsonBuilder(), ToXContent.EMPTY_PARAMS))
+                        .id(if (alert.id != Alert.NO_ID) alert.id else null))
                 }
                 ACKNOWLEDGED, DELETED -> {
                     throw IllegalStateException("Unexpected attempt to save ${alert.state} alert: $alert")
                 }
                 COMPLETED -> {
                     listOf<DocWriteRequest<*>>(
-                            DeleteRequest(AlertIndices.ALERT_INDEX, AlertIndices.MAPPING_TYPE, alert.id)
-                                    .routing(alert.monitorId),
-                            IndexRequest(AlertIndices.HISTORY_WRITE_INDEX, AlertIndices.MAPPING_TYPE)
-                                    .routing(alert.monitorId)
-                                    .source(alert.toXContent(XContentFactory.jsonBuilder(), ToXContent.EMPTY_PARAMS))
-                                    .id(alert.id))
+                        DeleteRequest(AlertIndices.ALERT_INDEX, AlertIndices.MAPPING_TYPE, alert.id)
+                            .routing(alert.monitorId),
+                        IndexRequest(AlertIndices.HISTORY_WRITE_INDEX, AlertIndices.MAPPING_TYPE)
+                            .routing(alert.monitorId)
+                            .source(alert.toXContent(XContentFactory.jsonBuilder(), ToXContent.EMPTY_PARAMS))
+                            .id(alert.id))
                 }
             }
         }
@@ -350,15 +410,17 @@ class MonitorRunner(
         var bulkRequest = BulkRequest().add(requestsToRetry)
         val successfulResponses = mutableListOf<BulkItemResponse>()
         var failedResponses = listOf<BulkItemResponse>()
-        retryPolicy.retry { // Handles 502, 503, 504 responses for the bulk request.
-            retryPolicy.iterator().forEach { delay -> // Handles partial failures
+        retryPolicy.retry {
+            // Handles 502, 503, 504 responses for the bulk request.
+            retryPolicy.iterator().forEach { delay ->
+                // Handles partial failures
                 val responses = client.bulk(bulkRequest).actionGet(bulkTimeout).items ?: arrayOf()
                 successfulResponses += responses.filterNot { it.isFailed }
                 failedResponses = responses.filter { it.isFailed }
                 // retry only if this is a EsRejectedExecutionException (i.e. 429 TOO MANY REQUESTs)
                 requestsToRetry = failedResponses
-                        .filter { ExceptionsHelper.unwrapCause(it.failure.cause) is EsRejectedExecutionException }
-                        .map { bulkRequest.requests()[it.itemId] as IndexRequest }
+                    .filter { ExceptionsHelper.unwrapCause(it.failure.cause) is EsRejectedExecutionException }
+                    .map { bulkRequest.requests()[it.itemId] as IndexRequest }
 
                 bulkRequest = BulkRequest().add(requestsToRetry)
                 if (requestsToRetry.isEmpty()) {
@@ -389,7 +451,7 @@ class MonitorRunner(
                 throw IllegalStateException("Message content missing in the Destination with id: ${action.destinationId}")
             }
             if (!dryrun) {
-                var destination = getDestinationInfo(action.destinationId)
+                val destination = getDestinationInfo(action.destinationId)
                 actionOutput[MESSAGE_ID] = destination.publish(actionOutput[SUBJECT], actionOutput[MESSAGE]!!)
             }
             ActionRunResult(action.name, actionOutput, false, null)
@@ -400,12 +462,11 @@ class MonitorRunner(
 
     private fun compileTemplate(template: Script, ctx: TriggerExecutionContext): String {
         return scriptService.compile(template, TemplateScript.CONTEXT)
-                .newInstance(template.params + mapOf("ctx" to ctx.asTemplateArg()))
-                .execute()
+            .newInstance(template.params + mapOf("ctx" to ctx.asTemplateArg()))
+            .execute()
     }
 
     private fun getDestinationInfo(destinationId: String): Destination {
-        var destination: Destination
         val getRequest = GetRequest(SCHEDULED_JOBS_INDEX, SCHEDULED_JOB_TYPE, destinationId).routing(destinationId)
         val getResponse = client.get(getRequest).actionGet()
         if (!getResponse.isExists || getResponse.isSourceEmpty) {
@@ -417,7 +478,7 @@ class MonitorRunner(
         ensureExpectedToken(XContentParser.Token.START_OBJECT, xcp.nextToken(), xcp::getTokenLocation)
         ensureExpectedToken(XContentParser.Token.FIELD_NAME, xcp.nextToken(), xcp::getTokenLocation)
         ensureExpectedToken(XContentParser.Token.START_OBJECT, xcp.nextToken(), xcp::getTokenLocation)
-        destination = Destination.parse(xcp)
+        val destination = Destination.parse(xcp)
         ensureExpectedToken(XContentParser.Token.END_OBJECT, xcp.nextToken(), xcp::getTokenLocation)
         return destination
     }

@@ -29,6 +29,7 @@ import com.amazon.opendistroforelasticsearch.alerting.core.model.ScheduledJob
 import com.amazon.opendistroforelasticsearch.alerting.core.model.SearchInput
 import com.amazon.opendistroforelasticsearch.alerting.core.settings.ScheduledJobSettings
 import com.amazon.opendistroforelasticsearch.alerting.makeRequest
+import com.amazon.opendistroforelasticsearch.alerting.model.TriggerCondition
 import org.apache.http.HttpHeaders
 import org.apache.http.entity.ContentType
 import org.apache.http.message.BasicHeader
@@ -125,7 +126,8 @@ class MonitorRestApiIT : AlertingRestTestCase() {
     fun `test updating conditions for a monitor`() {
         val monitor = createRandomMonitor()
 
-        val updatedTriggers = listOf(Trigger("foo", "1", Script("return true"), emptyList()))
+        val script = Script("return true")
+        val updatedTriggers = listOf(Trigger("foo", "1", TriggerCondition(script, null), script, emptyList()))
         val updateResponse = client().makeRequest("PUT", monitor.relativeUrl(),
                 emptyMap(), monitor.copy(triggers = updatedTriggers).toHttpEntity())
 
